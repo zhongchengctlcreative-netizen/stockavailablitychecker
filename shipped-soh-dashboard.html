@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZC Automation — Shipped & SOH</title>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; margin: 0; display: flex; align-items: flex-start; justify-content: center; }
+        .container { width: 1200px; max-width: 95vw; background: #ffffff; border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3); padding: 24px; color: #333; }
+        .header { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
+        .title { margin: 0; font-size: 24px; color: #333; text-align: center; }
+        .actions { display: flex; gap: 10px; }
+        .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 5px; border: 1px solid #c7d2fe; background: #edf2ff; color: #334155; text-decoration: none; cursor: pointer; }
+        .btn:hover { background: #e0e7ff; }
+        .grid { display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 16px; margin-top: 16px; }
+        .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px; }
+        .card h3 { margin: 0 0 8px; font-size: 18px; color: #333; }
+        .inputs { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+        .pill { border: 1px dashed #ccc; color: #334155; padding: 12px 16px; border-radius: 6px; cursor: pointer; text-align: center; background: #f8f9fa; }
+        .pill.hover { border-color: #667eea; background: #f0f0ff; }
+        .filters { display: none; gap: 10px; }
+        .filters input { width: 220px; padding: 8px 10px; border-radius: 5px; border: 1px solid #c7d2fe; background: #edf2ff; color: #334155; }
+        .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+        .chartBox { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; min-height: 360px; }
+        .tableWrap { margin-top: 16px; max-height: 280px; overflow: auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; }
+        .tableWrap table { border-collapse: collapse; width: 100%; color: #333; }
+        .tableWrap th, .tableWrap td { border-bottom: 1px solid #eee; padding: 8px; text-align: center; }
+        .tableWrap th { position: sticky; top: 0; background: #667eea; color: #fff; cursor: pointer; }
+        .tableWrap tr:hover { background: #e9ecef; cursor: pointer; }
+        .tableWrap tr.selected { background: #d9f0ff !important; }
+        canvas { width: 100% !important; height: 320px !important; }
+        /* Floating Home button pattern */
+        .home-fab { position: fixed; right: 20px; bottom: 20px; background: #edf2ff; color: #334155; border: 1px solid #c7d2fe; border-radius: 999px; padding: 10px 14px; box-shadow: 0 8px 20px rgba(0,0,0,0.15); text-decoration: none; font-size: 14px; display: inline-flex; align-items: center; gap: 8px; z-index: 1002; }
+        .home-fab:hover { background: #e0e7ff; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <h1 class="title">📦 Shipped & SOH Dashboard</h1>
+        <div class="actions">
+            <button class="btn" id="resetZoom">Reset Zoom</button>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h3>Files</h3>
+            <div class="inputs">
+                <div id="dropArea" class="pill">Drag & Drop <b>Shipped File</b> or click</div>
+                <input type="file" id="fileInput" accept=".xlsx" style="display:none;">
+                <div id="dropSOH" class="pill">Drag & Drop <b>SOH File</b> or click</div>
+                <input type="file" id="sohInput" accept=".xlsx" style="display:none;">
+            </div>
+        </div>
+        <div class="card">
+            <h3>Filters</h3>
+            <div id="filters" class="filters">
+                <input type="text" id="filterPBU" placeholder="Filter by PBU">
+                <input type="text" id="filterPartNo" placeholder="Filter by Part No">
+                <input type="text" id="filterPartDesc" placeholder="Filter by Part Desc">
+                <input type="text" id="filterCustomer" placeholder="Filter by Customer Name">
+                                <input type="number" id="weeksThreshold" placeholder="Weeks threshold" min="1" value="2" title="Flag potential shortage if weeks coverage is below this" style="width:160px;">
+                                <label style="display:inline-flex; align-items:center; gap:6px;">
+                                    <input type="checkbox" id="showOnlyShortage"> Show only potential shortage
+                                </label>
+            </div>
+        </div>
+    </div>
+
+    <div id="chartContainer" class="charts">
+        <div class="chartBox">
+            <canvas id="shippedChart"></canvas>
+        </div>
+        <div class="chartBox">
+            <canvas id="sohChart"></canvas>
+        </div>
+    </div>
+
+    <div id="surgeNotification" class="tableWrap"></div>
+    <div id="dropNotification" class="tableWrap"></div>
+</div>
+
+<script>
+const dropArea = document.getElementById("dropArea");
+const fileInput = document.getElementById("fileInput");
+const dropSOH = document.getElementById("dropSOH");
+const sohInput = document.getElementById("sohInput");
+const filtersDiv = document.getElementById("filters");
+const shippedChartCtx = document.getElementById("shippedChart").getContext("2d");
+const sohChartCtx = document.getElementById("sohChart").getContext("2d");
+const surgeDiv = document.getElementById("surgeNotification");
+const dropDiv = document.getElementById("dropNotification");
+
+let fullData = [];
+let sohData = [];
+let shippedChart;
+let sohChart;
+let originalDatasets = [];
+let sohStockMap = {};
+let zoomedKey = null; // TRACKS CURRENTLY ZOOMED ITEM
+
+function getRandomColor(){ return 'hsl('+Math.floor(Math.random()*360)+',70%,50%)'; }
+
+// -------------------- FILTERS --------------------
+function applyFilters(){
+    const pbu = document.getElementById("filterPBU").value.toLowerCase();
+    const partNo = document.getElementById("filterPartNo").value.toLowerCase();
+    const partDesc = document.getElementById("filterPartDesc").value.toLowerCase();
+    const customer = document.getElementById("filterCustomer").value.toLowerCase();
+
+    return fullData.filter(row=>{
+        return (!pbu || (row["PBU"] && row["PBU"].toLowerCase().includes(pbu))) &&
+               (!partNo || (row["Part No"] && row["Part No"].toLowerCase().includes(partNo))) &&
+               (!partDesc || (row["Part Desc"] && row["Part Desc"].toLowerCase().includes(partDesc))) &&
+               (!customer || (row["Customer Name"] && row["Customer Name"].toLowerCase().includes(customer)));
+    });
+}
+
+// -------------------- SHIPPED --------------------
+function updateChart(){
+    const filteredData = applyFilters();
+    const groupMap = {};
+    filteredData.forEach(row=>{
+        const week = row["Fiscal Week"];
+        const rawKey = (row["Part No"]||row["Part Desc"]) + " | " + (row["SubInventory"]||"") + " | " + (row["Customer Name"]||"Unknown");
+        const qty = parseFloat(row["Ship Qty"]) || 0;
+        const subCat = row["Sub Main Cat Code"] || '';
+        if(!groupMap[rawKey]) groupMap[rawKey] = {weeks:{}, subCat, partNo: row["Part No"]||"", subInv: row["SubInventory"]||""};
+        groupMap[rawKey].weeks[week] = (groupMap[rawKey].weeks[week] || 0) + qty;
+    });
+
+    let allWeeks = [...new Set(filteredData.map(r=>r["Fiscal Week"]))].sort();
+    if(allWeeks.length>5) allWeeks = allWeeks.slice(-5);
+
+    const datasets = [];
+    let count = 0;
+    for(const rawKey in groupMap){
+        if(count>=10) break;
+        const data = allWeeks.map(w=>groupMap[rawKey].weeks[w]||0);
+        datasets.push({
+            label: `${groupMap[rawKey].partNo} | ${groupMap[rawKey].subCat} | ${groupMap[rawKey].subInv}`,
+            data:data,
+            borderColor:getRandomColor(),
+            fill:false,
+            tension:0.1,
+            meta:{subCat:groupMap[rawKey].subCat, rawKey, partNo: groupMap[rawKey].partNo, subInv: groupMap[rawKey].subInv}
+        });
+        count++;
+    }
+
+    originalDatasets = datasets;
+
+    // APPLY ZOOMED KEY IF EXISTS
+    if(zoomedKey){
+        const [partNo, subInv] = zoomedKey.split(" | ");
+        const ds = originalDatasets.find(d=>d.meta.partNo===partNo && d.meta.subInv===subInv);
+        if(ds){
+            renderChart([ds], allWeeks);
+            updateSOHBarChart([zoomedKey]);
+        } else {
+            renderChart(datasets, allWeeks);
+            updateSOHBarChart();
+        }
+    } else {
+        renderChart(datasets, allWeeks);
+        updateSOHBarChart();
+    }
+
+    // --- build list of current SKUs ---
+    const currentKeys = datasets.map(ds=>`${ds.meta.partNo} | ${ds.meta.subInv}`);
+
+    // --- then update surge/drop table ---
+    updateChangeTables(groupMap, allWeeks);
+}
+
+function renderChart(datasets, weeks){
+    if(shippedChart) shippedChart.destroy();
+    shippedChart = new Chart(shippedChartCtx,{
+        type:'line',
+        data:{labels:weeks,datasets:datasets},
+        options:{
+            responsive:true,
+            plugins:{ title:{display:true,text:"Shipped Qty Last 5 Weeks"} },
+            onClick:(evt)=>{
+                const points = shippedChart.getElementsAtEventForMode(evt,'nearest',{intersect:true},true);
+                if(points.length){
+                    const idx=points[0].datasetIndex;
+                    const ds=originalDatasets[idx];
+                    zoomBothCharts(ds.meta.partNo, ds.meta.subInv);
+                }
+            },
+            scales:{y:{beginAtZero:true}}
+        }
+    });
+}
+
+// -------------------- SURGE / DROP TABLE --------------------
+function updateChangeTables(groupMap, weeks) {
+    const surgeResults = [];
+    const dropResults = [];
+    const thresholdInput = document.getElementById("weeksThreshold");
+    const threshold = thresholdInput ? Math.max(1, parseInt(thresholdInput.value || "2", 10)) : 2;
+    const showOnlyShortage = document.getElementById("showOnlyShortage")?.checked || false;
+    if (weeks.length >= 2) {
+        const lastWeek = weeks[weeks.length - 2];
+        const thisWeek = weeks[weeks.length - 1];
+        Object.keys(groupMap).forEach(rawKey => {
+            const lastWeekQty = groupMap[rawKey].weeks[lastWeek] || 0;
+            const thisWeekQty = groupMap[rawKey].weeks[thisWeek] || 0;
+            if (lastWeekQty === 0) return;
+            const changePct = ((thisWeekQty - lastWeekQty) / lastWeekQty) * 100;
+
+            const parts = rawKey.split("|").map(p => p.trim());
+            const partNo = parts[0] || "";
+            const subInv = parts[1] || "";
+            const customer = parts[2] || "";
+
+            // --- Correct SOH value ---
+            const key = `${partNo} | ${subInv}`;
+            let sohVal = 0;
+            if (sohStockMap[key]) {
+                sohVal = sohStockMap[key].Balance;
+            } else {
+                sohVal = sohData
+                    .filter(r => r.PartNo===partNo && r.SubInventory===subInv)
+                    .reduce((sum,r)=>sum+r.Balance,0);
+            }
+
+            const avgRunRate = Object.values(groupMap[rawKey].weeks).reduce((a,b)=>a+b,0)/Object.values(groupMap[rawKey].weeks).length;
+            const weeksCover = avgRunRate? (sohVal/avgRunRate).toFixed(1) : 0;
+            const potentialShortage = parseFloat(weeksCover) > 0 && parseFloat(weeksCover) < threshold;
+
+            if (changePct >= 20) surgeResults.push({partNo, subInv, subCat: groupMap[rawKey].subCat, customer, deltaQty:thisWeekQty-lastWeekQty, changePct, soh: sohVal, avgRunRate, weeksCover, potentialShortage});
+            else if (changePct <= -20) dropResults.push({partNo, subInv, subCat: groupMap[rawKey].subCat, customer, deltaQty:thisWeekQty-lastWeekQty, changePct, soh: sohVal, avgRunRate, weeksCover, potentialShortage});
+        });
+    }
+    const surgeFiltered = showOnlyShortage ? surgeResults.filter(r=>r.potentialShortage) : surgeResults;
+    const dropFiltered = showOnlyShortage ? dropResults.filter(r=>r.potentialShortage) : dropResults;
+    buildTable(surgeDiv, surgeFiltered, "🚀 Surge Notifications", "Surge %");
+    buildTable(dropDiv, dropFiltered, "📉 Drop Notifications", "Drop %");
+}
+
+// -------------------- BUILD SORTABLE TABLE --------------------
+function buildTable(container, results, title, pctLabel){
+    container.innerHTML="";
+    if(results.length===0){
+        container.innerHTML=`<p><b>No items for ${title}.</b></p>`;
+        return;
+    }
+
+    let sortState = {}; // track sort order per column
+
+    const createTable = (data) => {
+        let table = `<h3>${title}</h3><table><thead><tr>
+            <th data-key="partNo">Part No</th>
+            <th data-key="subInv">SubInventory</th>
+            <th data-key="subCat">Sub Main Cat</th>
+            <th data-key="customer">Customer</th>
+            <th data-key="deltaQty">ΔQty</th>
+            <th data-key="changePct">${pctLabel}</th>
+            <th data-key="soh">SOH</th>
+            <th data-key="avgRunRate">Avg Run Rate</th>
+            <th data-key="weeksCover">Weeks Coverage</th>
+            <th data-key="potentialShortage">Potential Shortage</th>
+            </tr></thead><tbody>`;
+
+        data.forEach(s=>{
+                        const rowClass = s.potentialShortage ? ' style="background:#fff5f5"' : '';
+                        table += `<tr data-part="${s.partNo}" data-sub="${s.subInv}"${rowClass}>
+                        <td>${s.partNo}</td>
+                        <td>${s.subInv}</td>
+                        <td>${s.subCat}</td>
+                        <td>${s.customer}</td>
+                        <td>${s.deltaQty}</td>
+                        <td>${s.changePct.toFixed(2)}</td>
+                        <td>${s.soh}</td>
+                        <td>${s.avgRunRate.toFixed(2)}</td>
+                        <td>${s.weeksCover}</td>
+                                                <td>${s.potentialShortage ? 'Yes' : 'No'}</td>
+                      </tr>`;
+        });
+        table += "</tbody></table>";
+        container.innerHTML = table;
+
+        container.querySelectorAll("tr[data-part]").forEach(row=>{
+            row.addEventListener("click",()=>{
+                container.querySelectorAll("tr.selected").forEach(r=>r.classList.remove("selected"));
+                row.classList.add("selected");
+                const partNo = row.getAttribute("data-part");
+                const subInv = row.getAttribute("data-sub");
+                zoomBothCharts(partNo, subInv);
+                document.getElementById("chartContainer").scrollIntoView({behavior:'smooth'});
+            });
+        });
+
+        container.querySelectorAll("th[data-key]").forEach(th=>{
+            th.style.cursor = "pointer";
+            th.addEventListener("click", ()=>{
+                const key = th.getAttribute("data-key");
+                sortState[key] = !sortState[key]; // toggle asc/desc
+                const sorted = [...data].sort((a,b)=>{
+                    let valA = a[key], valB = b[key];
+                    if(typeof valA==="string") valA=valA.toLowerCase();
+                    if(typeof valB==="string") valB=valB.toLowerCase();
+                    if(valA < valB) return sortState[key] ? -1 : 1;
+                    if(valA > valB) return sortState[key] ? 1 : -1;
+                    return 0;
+                });
+                createTable(sorted);
+            });
+        });
+    };
+
+    createTable(results);
+}
+
+// -------------------- SOH --------------------
+function handleSOHFile(file) {
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+        const data = new Uint8Array(evt.target.result);
+        const workbook = XLSX.read(data, { type: "array" });
+        sohData = [];
+        workbook.SheetNames.forEach(sheetName => {
+            const ws = workbook.Sheets[sheetName];
+            if (!ws) return;
+            const json = XLSX.utils.sheet_to_json(ws, { range: 4, defval: 0 });
+            sohData = sohData.concat(
+                json.map(row => ({
+                    PartNo: row["Item"] || "",
+                    SubInventory: row["Subinventory"] || "",
+                    Balance: parseFloat(row["Balance"]) || 0,
+                    InTransit: Object.keys(row)
+                        .filter(k => /\d{2}-[A-Za-z]{3}-\d{2}/.test(k))
+                        .reduce((sum, k) => sum + (parseFloat(row[k]) || 0), 0),
+                    "Item Description": row["Item Description"] || ""
+                }))
+            );
+        });
+        updateChart();
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+function updateSOHBarChart(filteredKeys = null){
+    let shippedKeys = shippedChart ? shippedChart.data.datasets.map(ds => `${ds.meta.partNo} | ${ds.meta.subInv}`) : [];
+    if(filteredKeys) shippedKeys = filteredKeys;
+
+    const filteredSOH = sohData.filter(row => shippedKeys.includes(`${row.PartNo} | ${row.SubInventory}`));
+
+    sohStockMap = {};
+    filteredSOH.forEach(row=>{
+        const key = `${row.PartNo} | ${row.SubInventory}`;
+        if(!sohStockMap[key]) sohStockMap[key] = { Balance: 0, InTransit: 0 };
+        sohStockMap[key].Balance += row.Balance;
+        sohStockMap[key].InTransit += row.InTransit;
+    });
+
+    const labels = Object.keys(sohStockMap);
+    const balances = labels.map(k=>sohStockMap[k].Balance);
+    const inTransits = labels.map(k=>sohStockMap[k].InTransit);
+
+    if(sohChart) sohChart.destroy();
+    sohChart = new Chart(sohChartCtx,{
+        type:"bar",
+        data:{
+            labels:labels,
+            datasets:[
+                {label:"SOH Balance", data:balances, backgroundColor:"rgba(75,192,192,0.6)"},
+                {label:"In-Transit", data:inTransits, backgroundColor:"rgba(255,159,64,0.6)"}
+            ]
+        },
+        options:{
+            responsive:true,
+            plugins:{
+                title:{display:true, text:"Stock On Hand & In-Transit (Part | SubInventory)"},
+                tooltip:{mode:'index', intersect:false},
+                legend:{position:'top'}
+            },
+            scales:{y:{beginAtZero:true}}
+        }
+    });
+}
+
+// -------------------- Zoom both charts --------------------
+function zoomBothCharts(partNo, subInv){
+    zoomedKey = `${partNo} | ${subInv}`;
+
+    // Rebuild dataset for this specific SKU
+    const filteredData = applyFilters().filter(row => 
+        row["Part No"] === partNo && row["SubInventory"] === subInv
+    );
+
+    if(filteredData.length === 0) return;
+
+    const groupMap = {};
+    filteredData.forEach(row=>{
+        const week = row["Fiscal Week"];
+        const rawKey = `${row["Part No"]} | ${row["SubInventory"]} | ${row["Customer Name"]||"Unknown"}`;
+        const qty = parseFloat(row["Ship Qty"]) || 0;
+        const subCat = row["Sub Main Cat Code"] || '';
+        if(!groupMap[rawKey]) groupMap[rawKey] = {weeks:{}, subCat, partNo, subInv};
+        groupMap[rawKey].weeks[week] = (groupMap[rawKey].weeks[week] || 0) + qty;
+    });
+
+    let allWeeks = [...new Set(filteredData.map(r=>r["Fiscal Week"]))].sort();
+    if(allWeeks.length>5) allWeeks = allWeeks.slice(-5);
+
+    const datasets = [];
+    for(const rawKey in groupMap){
+        const data = allWeeks.map(w=>groupMap[rawKey].weeks[w]||0);
+        datasets.push({
+            label: `${groupMap[rawKey].partNo} | ${groupMap[rawKey].subCat} | ${groupMap[rawKey].subInv}`,
+            data: data,
+            borderColor: getRandomColor(),
+            fill: false,
+            tension: 0.1,
+            meta: { subCat: groupMap[rawKey].subCat, rawKey, partNo, subInv }
+        });
+    }
+
+    renderChart(datasets, allWeeks);
+    updateSOHBarChart([zoomedKey]);
+}
+
+// -------------------- FILE HANDLING --------------------
+function handleFile(file){
+    if(!file.name.includes("Inventory vs Shipped Last 5 Weeks")){ alert("Incorrect file"); return; }
+    const reader=new FileReader();
+    reader.onload=(evt)=>{
+        const data=new Uint8Array(evt.target.result);
+        const workbook=XLSX.read(data,{type:"array"});
+        const sheetName="Shipped RawData";
+        if(!workbook.Sheets[sheetName]){ alert("Shipped RawData sheet not found"); return; }
+        const worksheet=workbook.Sheets[sheetName];
+        fullData=XLSX.utils.sheet_to_json(worksheet,{range:4,defval:''});
+        filtersDiv.style.display="block";
+        updateChart();
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+// -------------------- EVENT LISTENERS --------------------
+dropArea.addEventListener("dragover",e=>{e.preventDefault();dropArea.classList.add("hover");});
+dropArea.addEventListener("dragleave",e=>{e.preventDefault();dropArea.classList.remove("hover");});
+dropArea.addEventListener("drop",e=>{e.preventDefault();dropArea.classList.remove("hover");handleFile(e.dataTransfer.files[0]);});
+dropArea.addEventListener("click",()=>fileInput.click());
+fileInput.addEventListener("change",()=>handleFile(fileInput.files[0]));
+
+dropSOH.addEventListener("dragover",e=>{e.preventDefault();dropSOH.classList.add("hover");});
+dropSOH.addEventListener("dragleave",e=>{e.preventDefault();dropSOH.classList.remove("hover");});
+dropSOH.addEventListener("drop",e=>{e.preventDefault();dropSOH.classList.remove("hover");handleSOHFile(e.dataTransfer.files[0]);});
+dropSOH.addEventListener("click",()=>sohInput.click());
+sohInput.addEventListener("change",()=>handleSOHFile(sohInput.files[0]));
+
+["filterPBU","filterPartDesc","filterCustomer","filterPartNo"].forEach(id=>{
+    document.getElementById(id).addEventListener("input", ()=>{ updateChart(); });
+});
+
+// Part No auto-fill
+document.getElementById("filterPartNo").addEventListener("input", (e)=>{
+    const val = e.target.value.toLowerCase();
+    const partDescInput = document.getElementById("filterPartDesc");
+    if (!val) { partDescInput.value=""; updateChart(); return; }
+    const match = fullData.find(row => row["Part No"] && row["Part No"].toLowerCase().includes(val));
+    if(match && match["Part Desc"]) partDescInput.value = match["Part Desc"];
+    updateChart();
+});
+
+document.getElementById("resetZoom").addEventListener("click",()=>{
+    zoomedKey = null;
+    document.getElementById("filterPBU").value="";
+    document.getElementById("filterPartDesc").value="";
+    document.getElementById("filterPartNo").value="";
+    document.getElementById("filterCustomer").value="";
+    updateChart();
+});
+</script>
+<a href="index.html" class="home-fab" title="Back to Home">🏠 Home</a>
+</body>
+</html>
